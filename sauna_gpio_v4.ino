@@ -71,6 +71,7 @@ void IRAM_ATTR on_gate_rise() {
 
 void IRAM_ATTR on_clk_fall() {
   if (!in_burst) return;
+  ets_delay_us(2);
 
   // sample data on D2 falling edge
   uint32_t d1 = fastReadPin(PIN_D1);
@@ -159,7 +160,13 @@ void setup() {
 
 void loop() {
   static bool synced = false;
-  static int  cycles_since_sync = 0;
+  static int cycles_since_sync = 0;
+  static int last_temp = 0;
+  static int stable_temp = 0;
+  static int stable_counter = 0;
+  static int blink_counter = 0;
+  static int setpoint_temp = 0;
+  static int current_temp = 0;
   uint8_t fill = rb_w - rb_r;
   uint8_t byte;
   uint8_t frame[10];
@@ -204,7 +211,6 @@ void loop() {
       rb_pop_byte(frame[8]);
       rb_pop_byte(frame[9]);
 
-
       // Do some sanity checks:
       // - First byte should be sync
       // - Every other byte should be bias (or whatever it is)
@@ -215,15 +221,58 @@ void loop() {
           (frame[7] == BIAS) &&
           (frame[9] == BIAS))
       {
+
         int temp = digits[frame[2]] * 10 + digits[frame[4]];
         int time = digits[frame[6]] * 10 + digits[frame[8]];
-        if (client && client.connected()) {
-          client.printf("Temp: %d, Time: %d (queue @ %d)\n", temp, time, fill);
-          if ((temp < 0) || (time < 0)) {
-            client.printf("[%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X]\n", 
-              frame[0], frame[1], frame[2], frame[3], frame[4], 
-              frame[5], frame[6], frame[7], frame[8], frame[9]);
+
+        // If temp is valid, see if it is stable
+        if ((frame[2] == 0xFF) && (frame[4] == 0xFF)) {
+          blink_counter = 25;
+        }
+        else if (temp > 0) {
+          if (temp == last_temp) {
+            if (stable_counter < 255) {
+              stable_counter++;
+            }
+            if (stable_counter > 45) {
+              stable_temp = temp;
+            }
           }
+          else {
+            stable_counter = 0;
+            last_temp = temp;
+          }
+          if (blink_counter > 0) {
+            blink_counter--;
+          }
+        }
+        // Otherwise we're in a blink window
+        else {
+          if (client && client.connected()) {
+            client.printf("...bad frame [%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X] (queue @ %d)\n", 
+                          frame[0], frame[1], frame[2], frame[3], frame[4], 
+                          frame[5], frame[6], frame[7], frame[8], frame[9], 
+                          fill);
+          }
+        }
+
+        // If we are in a blink window, the temp displays setpoint.  Otherwise current.
+        if (blink_counter > 0) {
+          setpoint_temp = stable_temp;
+        }
+        else {
+          current_temp = stable_temp;
+        }
+
+        if (client && client.connected()) {
+          client.printf("Temp: %d, Setpoint: %d, Time: %d (queue @ %d)", current_temp, setpoint_temp, time, fill);
+          client.printf("          last_temp: %d, stable_temp: %d, stable_counter: %d, blink_counter: %d\n",
+                        last_temp, stable_temp, stable_counter, blink_counter);
+          // if ((temp < 0) || (time < 0)) {
+            // client.printf("[%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X]\n", 
+            //   frame[0], frame[1], frame[2], frame[3], frame[4], 
+            //   frame[5], frame[6], frame[7], frame[8], frame[9]);
+          // }
         }
       }
       else {
