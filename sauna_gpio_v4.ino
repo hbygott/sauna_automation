@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <ArduinoOTA.h>
 
 #include "driver/spi_slave.h"
 #include "soc/gpio_sig_map.h"   // VSPICS0_IN_IDX etc.
@@ -8,6 +10,10 @@
 extern "C" {
   void gpio_matrix_in(uint32_t gpio, uint32_t signal_idx, bool inv);
 }
+
+static const uint16_t TELNET_PORT = 23;
+static const char* WIFI_SSID = "Go Buffs!";
+static const char* WIFI_PASS = "shouldertoshoulder";
 
 // ----- Your pin mapping -----
 static const int PIN_D0 = 13;   // sampled
@@ -32,6 +38,23 @@ static volatile uint8_t rb[RB_SIZE];
 static volatile uint8_t rb_w = 0;
 static volatile uint8_t rb_r = 0;
 static portMUX_TYPE rbMux = portMUX_INITIALIZER_UNLOCKED;
+
+// ---- Telnet server ----
+WiFiServer server(TELNET_PORT);
+WiFiClient client;
+
+static void ensureClient() {
+  if (client && client.connected()) return;
+
+  if (client) client.stop();
+  client = server.available();
+  if (client) {
+    client.setNoDelay(true);
+    client.println();
+    client.println("Wilkomen das sauna sniffer");
+    client.println();
+  }
+}
 
 static inline bool rb_push_isr(const uint8_t &in) {
   bool ok = false;
@@ -58,8 +81,19 @@ static inline bool rb_pop(uint8_t &out) {
   return ok;
 }
 
+static inline bool rb_peek(uint8_t &out) {
+  uint8_t r = rb_r;
+  if (r == rb_w) return false;
+  out = rb[r];
+  return true;
+}
+
 // Called in ISR context after each transaction completes
 static void IRAM_ATTR post_trans_cb(spi_slave_transaction_t *t) {
+
+  // Ignore bogus / partial transfers
+  if (t->trans_len != 8) return;
+
   // t->user holds index 0..QUEUE_SIZE-1
   uint32_t idx = (uint32_t) t->user;
   rb_push_isr(rx_buf[idx]);
@@ -90,6 +124,24 @@ void setup() {
   pinMode(PIN_D3, INPUT);
   pinMode(PIN_D6, INPUT);
 
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  Serial.print("WiFi connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(250);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("WiFi OK. IP: ");
+  Serial.println(WiFi.localIP());
+
+  server.begin();
+  server.setNoDelay(true);
+
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready");
+
   // --- SPI bus config ---
   spi_bus_config_t buscfg = {};
   buscfg.mosi_io_num = PIN_D1;
@@ -101,7 +153,8 @@ void setup() {
 
   // --- SPI slave config ---
   spi_slave_interface_config_t slvcfg = {};
-  slvcfg.spics_io_num = PIN_D3;      // we will invert this input via GPIO matrix
+  // slvcfg.spics_io_num = PIN_D3;      // Routed manually later so we can invert
+  slvcfg.spics_io_num = -1;
   slvcfg.flags = 0;
   slvcfg.queue_size = QUEUE_SIZE;
   slvcfg.mode = 3;                  // SPI mode 0: CPOL=0, CPHA=0 (matches your sampling on rising)
@@ -110,7 +163,9 @@ void setup() {
   // Initialize SPI slave (DMA auto channel)
   esp_err_t err = spi_slave_initialize(HOST, &buscfg, &slvcfg, 0);
   if (err != ESP_OK) {
-    Serial.printf("spi_slave_initialize failed: %d\n", (int)err);
+    if (client && client.connected()) {
+      Serial.printf("spi_slave_initialize failed: %d\n", (int)err);
+    }
     while (true) delay(1000);
   }
 
@@ -119,28 +174,43 @@ void setup() {
   // For VSPI (SPI3), CS0 input index is VSPICS0_IN_IDX.
   // gpio_matrix_in(gpio, signal_idx, invert)
   gpio_matrix_in(PIN_D3, VSPICS0_IN_IDX, true);
-
-  Serial.println("SPI sniffer up. Queuing transactions...");
+  if (client && client.connected()) {
+    Serial.println("SPI sniffer up. Queuing transactions...");
+  }
   queue_all_transactions();
   Serial.println("Ready.");
 }
 
 void loop() {
+  uint8_t fill = rb_w - rb_r;
+
+  ensureClient();
+  ArduinoOTA.handle();
+
   // Drain ring buffer and print results
   uint8_t item;
   while (rb_pop(item)) {
-    Serial.printf("0x%02X\n", item);
+    if (client && client.connected()) {
+      client.printf("0x%02X\n", item);
+    }
   }
 
   // Keep the SPI queue full: as transactions complete, we must re-queue them.
   // We do this by pulling completed transactions from driver and re-queueing.
   spi_slave_transaction_t *rt = nullptr;
   while (spi_slave_get_trans_result(HOST, &rt, 0) == ESP_OK) {
-    // Re-queue same transaction (its rx_buffer points to rx_buf[idx] already)
+    // Re-queue same transaction
     esp_err_t err = spi_slave_queue_trans(HOST, rt, portMAX_DELAY);
     if (err != ESP_OK) {
-      Serial.printf("re-queue failed: %d\n", (int)err);
+      if (client && client.connected()) {
+        client.printf("re-queue failed: %d\n", (int)err);
+      }
     }
+  }
+   
+  // If telnet client disconnected, clean up
+  if (client && !client.connected()) {
+    client.stop();
   }
 
   delay(1);
