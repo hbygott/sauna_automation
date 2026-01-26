@@ -113,8 +113,8 @@ void setup() {
   digits[0xC7] = 7;
   digits[0x01] = 8;
   digits[0x05] = 9;
-  digits[0xE6] = 10;
-  digits[0x80] = 11;
+  digits[0x80] = 10;
+  digits[0xE6] = 11;
   digits[0x48] = 12;
 
   // --- SPI bus config ---
