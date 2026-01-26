@@ -22,6 +22,11 @@ static const int PIN_D2 = 27;   // SCLK
 static const int PIN_D3 = 26;   // "gate" -> use as CS (but inverted)
 static const int PIN_D6 = 25;   // sampled
 
+// Translate values to digits
+static const int SYNC = 0xEE;
+static const int BIAS = 0xFF;
+static int digits[256]; // initialized in setup
+
 // ----- SPI host -----
 static const spi_host_device_t HOST = VSPI_HOST;   // VSPI = SPI3 on classic ESP32
 
@@ -142,6 +147,26 @@ void setup() {
   ArduinoOTA.begin();
   Serial.println("OTA Ready");
 
+  // Initialize our digit lookup
+  for (int i = 0; i < 256; i++) {
+      digits[i] = -1;
+  }
+  
+  // Value displayed by segment displays
+  digits[0x81] = 0;
+  digits[0xE7] = 1;
+  digits[0x49] = 2;
+  digits[0x45] = 3;
+  digits[0x27] = 4;
+  digits[0x15] = 5;
+  digits[0x31] = 6;
+  digits[0xC7] = 7;
+  digits[0x01] = 8;
+  digits[0x05] = 9;
+  digits[0xE6] = 10;
+  digits[0x80] = 11;
+  digits[0x48] = 12;
+
   // --- SPI bus config ---
   spi_bus_config_t buscfg = {};
   buscfg.mosi_io_num = PIN_D1;
@@ -182,18 +207,85 @@ void setup() {
 }
 
 void loop() {
+  static bool synced = false;
+  static int  cycles_since_sync = 0;
   uint8_t fill = rb_w - rb_r;
+  uint8_t byte;
+  uint8_t frame[10];
 
   ensureClient();
   ArduinoOTA.handle();
 
-  // Drain ring buffer and print results
-  uint8_t item;
-  while (rb_pop(item)) {
-    if (client && client.connected()) {
-      client.printf("0x%02X\n", item);
+// Look for our sync marker.  Leave it in place when we find it.
+  if (not synced) {
+    while (rb_peek(byte)) {
+      if (byte == SYNC) {
+        synced = true;
+        cycles_since_sync = 0;
+        break;
+      }
+      else {
+        rb_pop(byte);
+        cycles_since_sync++;
+          // If we haven't seen sync in 1000 cycles, assume we're powered off
+        if (cycles_since_sync > 1000)
+        {
+          if ((cycles_since_sync % 1000) == 0) {
+            if (client && client.connected()) {
+              client.printf("powered off (queue @ %d)\n", fill);
+            }
+          }
+        }
+      }
     }
   }
+  // We're synchronized. Look for a full frame of 10
+  else {
+    if (fill >=10) {
+      rb_pop(frame[0]);
+      rb_pop(frame[1]);
+      rb_pop(frame[2]);
+      rb_pop(frame[3]);
+      rb_pop(frame[4]);
+      rb_pop(frame[5]);
+      rb_pop(frame[6]);
+      rb_pop(frame[7]);
+      rb_pop(frame[8]);
+      rb_pop(frame[9]);
+
+
+      // Do some sanity checks:
+      // - First byte should be sync
+      // - Every other byte should be bias (or whatever it is)
+      if ((frame[0] == SYNC) &&
+          (frame[1] == BIAS) &&
+          (frame[3] == BIAS) &&
+          (frame[5] == BIAS) &&
+          (frame[7] == BIAS) &&
+          (frame[9] == BIAS))
+      {
+        int temp = digits[frame[2]] * 10 + digits[frame[4]];
+        int time = digits[frame[6]] * 10 + digits[frame[8]];
+        if (client && client.connected()) {
+          client.printf("Temp: %d, Time: %d (queue @ %d)\n", temp, time, fill);
+          if ((temp < 0) || (time < 0)) {
+            client.printf("[%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X]\n", 
+              frame[0], frame[1], frame[2], frame[3], frame[4], 
+              frame[5], frame[6], frame[7], frame[8], frame[9]);
+          }
+        }
+      }
+      else {
+        synced = false;
+        if (client && client.connected()) {
+          client.printf("...bad frame [%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X] (queue @ %d)\n", 
+                        frame[0], frame[1], frame[2], frame[3], frame[4], 
+                        frame[5], frame[6], frame[7], frame[8], frame[9], 
+                        fill);
+        }
+      }
+    } // if we have enough bytes. else: just wait
+  } // if we're synchronized. else: just wait
 
   // Keep the SPI queue full: as transactions complete, we must re-queue them.
   // We do this by pulling completed transactions from driver and re-queueing.
