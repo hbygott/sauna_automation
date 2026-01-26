@@ -31,7 +31,7 @@ static int digits[256]; // initialized in setup
 static const spi_host_device_t HOST = VSPI_HOST;   // VSPI = SPI3 on classic ESP32
 
 // We’ll queue many 1-byte transactions.
-static constexpr int QUEUE_SIZE = 32;
+static constexpr int QUEUE_SIZE = 128;
 
 static uint8_t rx_items[QUEUE_SIZE];
 static spi_slave_transaction_t trans[QUEUE_SIZE];
@@ -161,6 +161,12 @@ static uint8_t frame[10];
 static int frame_idx = 0;
 static int cycles_since_sync = 0;
 
+static int last_temp = 0;
+static int stable_counter = 0;
+static int blink_counter = 0;
+static int setpoint_temp = 0;
+static int current_temp = 0;
+
 void process_byte(uint8_t byte) {
   if (!synced) {
     if (byte == SYNC) {
@@ -188,32 +194,55 @@ void process_byte(uint8_t byte) {
   // Do some sanity checks:
   // - First byte should be sync
   // - Every other byte should be bias (or whatever it is)
-  if ((frame[0] == SYNC) &&
-      (frame[1] == BIAS) &&
-      (frame[3] == BIAS) &&
-      (frame[5] == BIAS) &&
-      (frame[7] == BIAS) &&
-      (frame[9] == BIAS))
+  if ((frame[0] != SYNC) ||
+      (frame[1] != BIAS) ||
+      (frame[3] != BIAS) ||
+      (frame[5] != BIAS) ||
+      (frame[7] != BIAS) ||
+      (frame[9] != BIAS))
   {
-    int temp = digits[frame[2]] * 10 + digits[frame[4]];
-    int time = digits[frame[6]] * 10 + digits[frame[8]];
-    if (client && client.connected()) {
-      client.printf("Temp: %d, Time: %d (queue @ )\n", temp, time);
-
-      if ((temp < 0) || (time < 0)) {
-        client.printf("[%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X]\n", 
-          frame[0], frame[1], frame[2], frame[3], frame[4], 
-          frame[5], frame[6], frame[7], frame[8], frame[9]);
-      }
-    }
-  }
-  else {
     synced = false;
     if (client && client.connected()) {
       client.printf("...bad frame [%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X] (queue @ )\n", 
                     frame[0], frame[1], frame[2], frame[3], frame[4], 
                     frame[5], frame[6], frame[7], frame[8], frame[9]);
     }
+    return;
+  }
+
+  // Check for a blink frame
+  if ((frame[2] == 0xFF) || (frame[4] == 0xFF)) {
+    blink_counter = 50;
+    return;
+  }
+  if (blink_counter > 0) {blink_counter--;}
+
+  int temp = digits[frame[2]] * 10 + digits[frame[4]];
+  int time = digits[frame[6]] * 10 + digits[frame[8]];
+  
+  // Check temp reading stability
+  if (temp != last_temp) {
+    stable_counter = 0;
+  }
+  else if (stable_counter < 255) {
+    stable_counter++;
+  }
+  last_temp = temp;
+
+  // If we are blinking, the temp displays setpoint.  Otherwise current temp.
+  if (stable_counter > 75) {
+    if (blink_counter > 0) {
+      setpoint_temp = temp;
+    }
+    else {
+      current_temp = temp;
+    }
+  }
+
+  if (client && client.connected()) {
+    client.printf("Temp: %d, Setpoint: %d, Timer: %d", current_temp, setpoint_temp, time);
+    client.printf("          temp: %d, last_temp: %d, stable_counter: %d, blink_counter: %d\n",
+                             temp, last_temp, stable_counter, blink_counter);
   }
 }
 
