@@ -1,0 +1,55 @@
+esphome:
+  name: sauna
+  min_version: 2025.11.0
+  name_add_mac_suffix: false
+
+esp32:
+  variant: esp32
+#  framework:
+#    type: arduino
+
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+# Enable logging
+logger:
+  level: INFO
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret sauna_api_key
+
+# Allow Over-The-Air updates
+ota:
+- platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  use_address: 192.168.7.249
+
+binary_sensor:
+  - platform: sauna
+    running:
+      name: "Sauna On"
+
+sensor:
+  - platform: uptime
+    name: "Sauna Uptime"
+  - platform: sauna
+    current_temp:
+      name: "Sauna Current Temp"
+      unit_of_measurement: "°F"
+      accuracy_decimals: 0
+    setpoint_temp:
+      name: "Sauna Setpoint Temp"
+      unit_of_measurement: "°F"
+      accuracy_decimals: 0
+    timer:
+      name: "Sauna Timer"
+      unit_of_measurement: "min"
+      accuracy_decimals: 0
