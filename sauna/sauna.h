@@ -38,11 +38,14 @@ class Sauna : public Component {
   uint8_t frame_idx{0};
 
   int current_temp{-1};
+  int current_timer{-1};
   int setpoint_temp{-1};
   int last_temp{-1};
   uint8_t stable_counter{0};
   uint8_t blink_counter{0};
   uint32_t last_publish_ms{0};
+  uint32_t blink_start_ms{0};
+  uint32_t stable_start_ms{0};
 };
 
 }  // namespace sauna

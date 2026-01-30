@@ -80,9 +80,8 @@ static void spi_task(void *param) {
 
 void Sauna::setup() {
 
-  // digits LUT init
-  //for (int i = 0; i < 256; i++) digits_[i] = -1;
-
+  // Set up our lookup table for segment display decode
+  for (int i = 0; i < 256; i++) digits[i] = -1;
   digits[0x81] = 0;
   digits[0xE7] = 1;
   digits[0x49] = 2;
@@ -93,9 +92,11 @@ void Sauna::setup() {
   digits[0xC7] = 7;
   digits[0x01] = 8;
   digits[0x05] = 9;
-  digits[0xE6] = 10;
-  digits[0x80] = 11;
+  digits[0x80] = 10;
+  digits[0xE6] = 11;
   digits[0x48] = 12;
+  digits[0x44] = 13;
+  digits[0x26] = 14;
  
   gpio_config_t io = {};
   io.intr_type = GPIO_INTR_DISABLE;
@@ -152,6 +153,7 @@ void Sauna::setup() {
 
 void Sauna::process_byte_(uint8_t byte) {
   //ESP_LOGI(TAG, "0x%2X", byte);
+  const uint32_t now = millis();
 
   if (!synced) {
     if (byte == SYNC) {
@@ -194,27 +196,26 @@ void Sauna::process_byte_(uint8_t byte) {
 
   // Check for a blink frame.  If we're blinked off, start a countdown and bail on this frame.
   if ((frame[2] == 0xFF) || (frame[4] == 0xFF)) {
-    blink_counter = 50;
+    blink_start_ms = now;
     return;
   }
-  if (blink_counter > 0) {blink_counter--;}
-
   int temp = digits[frame[2]] * 10 + digits[frame[4]];
-  int time = digits[frame[6]] * 10 + digits[frame[8]];
+
+  // If time is blinking, just ignore it
+  if ((frame[6] != 0xFF) || (frame[8] != 0xFF)) {
+     current_timer = digits[frame[6]] * 10 + digits[frame[8]];
+  }
 
   // Check temp reading stability
   if (temp != last_temp) {
-    stable_counter = 0;
-  }
-  else if (stable_counter < 255) {
-    stable_counter++;
+    stable_start_ms = now;
   }
   last_temp = temp;
 
   // If we're stable, process the temperature.
   // If we are blinking, the temp displays setpoint.  Otherwise current temp.
-  if (stable_counter > 75) {
-    if (blink_counter > 0) {
+  if (now - stable_start_ms  > 1000) {
+    if (now - blink_start_ms <  500) {
       setpoint_temp = temp;
     }
     else {
@@ -223,14 +224,14 @@ void Sauna::process_byte_(uint8_t byte) {
   }
 
 
-  const uint32_t now = millis();
+  //ESP_LOGI(TAG,"Temp: %d, Setpoint: %d, Timer: %d, Raw %d, Blink: %d, Stable: %d", current_temp, setpoint_temp, current_timer, temp, now - blink_start_ms, now - stable_start_ms);
   if (now - last_publish_ms > 500) {
     last_publish_ms = now;
-    ESP_LOGI(TAG,"Temp: %d, Setpoint: %d, Timer: %d", current_temp, setpoint_temp, time);
+    //ESP_LOGI(TAG,"Temp: %d, Setpoint: %d, Timer: %d", current_temp, setpoint_temp, current_timer);
     if ( running_binary_sensor_) running_binary_sensor_->publish_state(true);
     if (current_temp_sensor_ && current_temp >= 0) current_temp_sensor_->publish_state(current_temp);
     if (setpoint_temp_sensor_ && setpoint_temp >= 0) setpoint_temp_sensor_->publish_state(setpoint_temp);
-    if (timer_sensor_) timer_sensor_->publish_state(time);
+    if (timer_sensor_) timer_sensor_->publish_state(current_timer);
   }
 }
 
