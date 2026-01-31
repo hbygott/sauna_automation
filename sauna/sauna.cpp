@@ -5,10 +5,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "esp_intr_alloc.h"
 
 #include "driver/spi_slave.h"
 #include "driver/gpio.h"
 #include "soc/gpio_sig_map.h"
+#include "soc/gpio_struct.h"
+#include "soc/gpio_reg.h"
+
 
 extern "C" {
   void gpio_matrix_in(uint32_t gpio, uint32_t signal_idx, bool inv);
@@ -78,6 +82,28 @@ static void spi_task(void *param) {
 }
 
 
+// ----- Button Spoofing -----
+void Sauna::press_button(uint32_t button_code, uint32_t hold_ms) {
+  // called from HA context (not ISR)
+  button_selected = button_code;
+  button_hold_until_ms = millis() + hold_ms;
+}
+
+void IRAM_ATTR Sauna::d3_isr_trampoline(void *arg) {
+  static_cast<Sauna *>(arg)->d3_isr();
+}
+
+void IRAM_ATTR Sauna::d3_isr() {
+  if ((GPIO.in & BUTTON_MASK) == button_selected) {
+    // clamp low
+    GPIO.enable_w1ts = (1UL << PIN_D6);
+  } else {
+    // release (high-Z)
+    GPIO.enable_w1tc = (1UL << PIN_D6);
+  }
+}
+
+
 void Sauna::setup() {
 
   // Set up our lookup table for segment display decode
@@ -88,7 +114,7 @@ void Sauna::setup() {
   digits[0x45] = 3;
   digits[0x27] = 4;
   digits[0x15] = 5;
-  digits[0x31] = 6;
+  digits[0x11] = 6;
   digits[0xC7] = 7;
   digits[0x01] = 8;
   digits[0x05] = 9;
@@ -149,6 +175,22 @@ void Sauna::setup() {
                          );
 
   ESP_LOGI(TAG, "SPI sniffer ready");
+
+  // D6: open-drain output, default released (high-Z)
+  gpio_config_t out = {};
+  out.intr_type = GPIO_INTR_DISABLE;
+  out.mode = GPIO_MODE_OUTPUT_OD;        // open drain
+  out.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  out.pull_up_en = GPIO_PULLUP_DISABLE;
+  out.pin_bit_mask = (1ULL << PIN_D6);
+  gpio_config(&out);
+
+  gpio_set_level((gpio_num_t)PIN_D6, 0);   // asserted value when enabled
+  GPIO.enable_w1tc = (1UL << PIN_D6);      // start released (disable driver)
+
+  gpio_set_intr_type((gpio_num_t)PIN_D3, GPIO_INTR_ANYEDGE);
+  gpio_install_isr_service(ESP_INTR_FLAG_IRAM);  // safe to call once globally; ESPHome often already does, but it's OK if returns ESP_ERR_INVALID_STATE
+  gpio_isr_handler_add((gpio_num_t)PIN_D3, &Sauna::d3_isr_trampoline, this);
 }
 
 void Sauna::process_byte_(uint8_t byte) {
@@ -196,9 +238,11 @@ void Sauna::process_byte_(uint8_t byte) {
 
   // Check for a blink frame.  If we're blinked off, start a countdown and bail on this frame.
   if ((frame[2] == 0xFF) || (frame[4] == 0xFF)) {
-    blink_start_ms = now;
+    blink_counter++;
+    if (blink_counter > 5) blink_start_ms = now;
     return;
   }
+  blink_counter = 0;
   int temp = digits[frame[2]] * 10 + digits[frame[4]];
 
   // If time is blinking, just ignore it
@@ -236,13 +280,17 @@ void Sauna::process_byte_(uint8_t byte) {
 }
 
 void Sauna::loop() {
-  if (byte_queue == nullptr) return;
-
   uint32_t start = millis();
-  uint8_t b;
+
+  // Check if its time to turn off a button
+  if (start > button_hold_until_ms) {
+     button_selected = BUTTON_NO_PRESS;
+  }
 
   // Process up to ~5ms worth per ESPHome loop iteration
+  if (byte_queue == nullptr) return;
   while ((millis() - start) < 5) {
+    uint8_t b;
     if (xQueueReceive(byte_queue, &b, 0) != pdTRUE) break;
     process_byte_(b);
   }

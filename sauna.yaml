@@ -41,6 +41,7 @@ sensor:
   - platform: uptime
     name: "Sauna Uptime"
   - platform: sauna
+    id: sauna_panel
     current_temp:
       name: "Sauna Current Temp"
       unit_of_measurement: "°F"
@@ -53,3 +54,40 @@ sensor:
       name: "Sauna Timer"
       unit_of_measurement: "min"
       accuracy_decimals: 0
+
+button:
+  - platform: template
+    name: "Red Light"
+    on_press:
+      - lambda: |-
+          id(sauna_panel).press_button(esphome::sauna::BUTTON_RED_LIGHT, 100);
+  - platform: template
+    name: "Temperature Up"
+    on_press:
+      - lambda: |-
+          id(sauna_panel).press_button(esphome::sauna::BUTTON_TEMP_UP, 100);
+  - platform: template
+    name: "Temperature Down"
+    on_press:
+      - lambda: |-
+          id(sauna_panel).press_button(esphome::sauna::BUTTON_TEMP_DOWN, 100);
+  - platform: template
+    name: "Timer Increase"
+    on_press:
+      - lambda: |-
+          id(sauna_panel).press_button(esphome::sauna::BUTTON_TIMER_UP, 100);
+  - platform: template
+    name: "Timer Decrease"
+    on_press:
+      - lambda: |-
+          id(sauna_panel).press_button(esphome::sauna::BUTTON_TIMER_DOWN, 100);
+  - platform: template
+    name: "Color Light"
+    on_press:
+      - lambda: |-
+          id(sauna_panel).press_button(esphome::sauna::BUTTON_COLOR_LIGHT, 100);
+  - platform: template
+    name: "Power"
+    on_press:
+      - lambda: |-
+          id(sauna_panel).press_button(esphome::sauna::BUTTON_POWER, 100);
