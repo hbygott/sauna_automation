@@ -95,11 +95,9 @@ void IRAM_ATTR Sauna::d3_isr_trampoline(void *arg) {
 
 void IRAM_ATTR Sauna::d3_isr() {
   if ((GPIO.in & BUTTON_MASK) == button_selected) {
-    // clamp low
-    GPIO.enable_w1ts = (1UL << PIN_D6);
+    GPIO.out_w1ts = (1UL << PIN_D6);  // gate HIGH = press
   } else {
-    // release (high-Z)
-    GPIO.enable_w1tc = (1UL << PIN_D6);
+    GPIO.out_w1tc = (1UL << PIN_D6);  // gate LOW  = release
   }
 }
 
@@ -134,8 +132,7 @@ void Sauna::setup() {
       (1ULL << PIN_D0) |
       (1ULL << PIN_D1) |   // MOSI
       (1ULL << PIN_D2) |   // SCLK
-      (1ULL << PIN_D3) |   // CS gate
-      (1ULL << PIN_D6);
+      (1ULL << PIN_D3);    // CS gate
 
   gpio_config(&io);
 
@@ -176,17 +173,9 @@ void Sauna::setup() {
 
   ESP_LOGI(TAG, "SPI sniffer ready");
 
-  // D6: open-drain output, default released (high-Z)
-  gpio_config_t out = {};
-  out.intr_type = GPIO_INTR_DISABLE;
-  out.mode = GPIO_MODE_OUTPUT_OD;        // open drain
-  out.pull_down_en = GPIO_PULLDOWN_DISABLE;
-  out.pull_up_en = GPIO_PULLUP_DISABLE;
-  out.pin_bit_mask = (1ULL << PIN_D6);
-  gpio_config(&out);
-
-  gpio_set_level((gpio_num_t)PIN_D6, 0);   // asserted value when enabled
-  GPIO.enable_w1tc = (1UL << PIN_D6);      // start released (disable driver)
+  // D6: MOSFET gating to ground
+  gpio_set_direction((gpio_num_t) PIN_D6, GPIO_MODE_OUTPUT);
+  gpio_set_level((gpio_num_t) PIN_D6, 0);   // LOW -- button off
 
   gpio_set_intr_type((gpio_num_t)PIN_D3, GPIO_INTR_ANYEDGE);
   gpio_install_isr_service(ESP_INTR_FLAG_IRAM);  // safe to call once globally; ESPHome often already does, but it's OK if returns ESP_ERR_INVALID_STATE

@@ -9,7 +9,7 @@ namespace esphome {
 namespace sauna {
 
 // If button is being sampled, D3 will be low, and D0-D2 address the button
-//                                                     // signals  D2 D3 D1 D0
+//                                                      // signals  D2 D3 D1 D0
 static const uint32_t BUTTON_MASK        = 0x0C006000;  //    pins  27 26 14 13
 static const uint32_t BUTTON_TIMER_DOWN  = 0x00000000;  //           0  0  0  0      000
 static const uint32_t BUTTON_TIMER_UP    = 0x00002000;  //           0  0  0  1      001
